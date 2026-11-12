@@ -1,0 +1,59 @@
+name: 更新新闻联播 RSS
+
+on:
+  schedule:
+    - cron: "45 15 * * *"   # 北京时间 23:45：抓当天
+    - cron: "0 0 * * *"     # 北京时间 08:00：补抓昨天（防止当晚失败漏掉）
+  workflow_dispatch:         # 可在 GitHub 的 Actions 页面手动运行
+    inputs:
+      from:
+        description: "从哪天开始补抓（YYYYMMDD），留空则只抓昨天和今天"
+        required: false
+        default: ""
+
+permissions:
+  contents: write   # 把 data/ 和 docs/ 提交回仓库
+  pages: write      # 发布到 GitHub Pages
+  id-token: write
+
+concurrency:
+  group: xwlb-rss
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 抓取并生成 RSS
+        env:
+          FROM_DATE: ${{ inputs.from || 'yesterday' }}
+          RSS_LINK: ${{ vars.RSS_LINK || format('https://{0}.github.io/{1}/', github.repository_owner, github.event.repository.name) }}
+          RSS_TITLE: ${{ vars.RSS_TITLE }}
+          RSS_DESCRIPTION: ${{ vars.RSS_DESCRIPTION }}
+        # 退出码 2 = 央视网当天还没更新完，不算失败
+        run: python3 xwlb.py --rss --from "$FROM_DATE" || [ $? -eq 2 ]
+
+      - name: 保存抓取结果到仓库
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs
+          if [ -d data ]; then git add data; fi
+          if git diff --cached --quiet; then
+            echo "没有新内容"
+          else
+            git commit -m "RSS 更新 $(TZ=Asia/Shanghai date +%F)"
+            git push
+          fi
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: docs
+      - id: deploy
+        uses: actions/deploy-pages@v4
